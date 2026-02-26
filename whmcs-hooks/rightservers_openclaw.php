@@ -58,7 +58,7 @@ add_hook('AfterModuleCreate', 1, function ($vars) {
 
     // Only run for OpenClaw VPS products
     $groupName = $vars['params']['product']['groupname'] ?? '';
-    if (stripos($groupName, 'openclaw') === false && stripos($productName, 'openclaw') === false) {
+    if (stripos($groupName, 'rightclaw') === false && stripos($productName, 'rightclaw') === false) {
         return;
     }
 
@@ -110,7 +110,7 @@ add_hook('AfterModuleCreate', 1, function ($vars) {
 add_hook('AfterModuleSuspend', 1, function ($vars) {
     $serviceId = $vars['params']['serviceid'];
     $productName = $vars['params']['product']['name'] ?? '';
-    if (stripos($productName, 'openclaw') === false) return;
+    if (stripos($productName, 'rightclaw') === false) return;
 
     $assignedIp = $vars['params']['dedicatedip'] ?? '';
     $rootPass   = $vars['params']['password'] ?? '';
@@ -127,7 +127,7 @@ add_hook('AfterModuleSuspend', 1, function ($vars) {
 add_hook('AfterModuleUnsuspend', 1, function ($vars) {
     $serviceId = $vars['params']['serviceid'];
     $productName = $vars['params']['product']['name'] ?? '';
-    if (stripos($productName, 'openclaw') === false) return;
+    if (stripos($productName, 'rightclaw') === false) return;
 
     $assignedIp = $vars['params']['dedicatedip'] ?? '';
     $rootPass   = $vars['params']['password'] ?? '';
