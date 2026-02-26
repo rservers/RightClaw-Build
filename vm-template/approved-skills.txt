@@ -1,0 +1,10 @@
+# Right Servers Approved Skill Whitelist
+# Only skills in this list may be installed
+# Format: skill-name (one per line)
+weather
+slack
+tmux
+github
+whmcs
+healthcheck
+skill-creator

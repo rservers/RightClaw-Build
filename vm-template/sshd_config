@@ -1,0 +1,22 @@
+Port 22
+Protocol 2
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+LoginGraceTime 30
+PermitRootLogin prohibit-password
+StrictModes yes
+MaxAuthTries 4
+MaxSessions 5
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+AllowUsers root
+ClientAliveInterval 300
+ClientAliveCountMax 2
+Banner /etc/ssh/banner

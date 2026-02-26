@@ -1,0 +1,14 @@
+[Unit]
+Description=Right Servers OpenClaw First Boot Setup
+After=network.target open-vm-tools.service
+ConditionPathExists=/opt/rightservers/scripts/first-boot.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rightservers/scripts/first-boot.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
