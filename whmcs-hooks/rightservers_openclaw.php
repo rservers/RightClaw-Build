@@ -42,8 +42,9 @@ define('RS_SSH_KEY', '/root/.ssh/rightservers_deploy');
 // Your deployer SSH username (root by default)
 define('RS_SSH_USER', 'root');
 
-// How long to wait (seconds) for VM to become available after AutoVM provisions it
-define('RS_BOOT_WAIT', 60);
+// Max seconds to wait for VM to become reachable after AutoVM provisions it
+// Hook will poll every 15s and proceed as soon as SSH is up — no unnecessary waiting
+define('RS_BOOT_MAX_WAIT', 300);
 
 // ============================================================
 // HOOK: After Module Create (fires after AutoVM provisions VM)
@@ -76,14 +77,18 @@ add_hook('AfterModuleCreate', 1, function ($vars) {
     // Log that we're starting
     rs_log($serviceId, "OpenClaw post-provisioning started | Product: $productName | IP: $assignedIp");
 
-    // Wait for VM to boot and become reachable
-    rs_log($serviceId, "Waiting " . RS_BOOT_WAIT . "s for VM to boot...");
-    sleep(RS_BOOT_WAIT);
-
-    // Attempt SSH connection and run tier script
+    // Poll until VM is reachable via SSH (up to RS_BOOT_MAX_WAIT seconds)
     $targetIp = $assignedIp ?: $serverIp;
     if (empty($targetIp)) {
         rs_log($serviceId, "ERROR: Could not determine VM IP address. Manual tier activation required.");
+        return;
+    }
+
+    // Poll for SSH availability — proceed as soon as VM responds, max RS_BOOT_MAX_WAIT seconds
+    rs_log($serviceId, "Waiting for VM to come online (max " . RS_BOOT_MAX_WAIT . "s, polling every 15s)...");
+    $ready = rs_wait_for_ssh($targetIp, RS_BOOT_MAX_WAIT, 15);
+    if (!$ready) {
+        rs_log($serviceId, "ERROR: VM at $targetIp did not come online within " . RS_BOOT_MAX_WAIT . "s. Manual tier activation required.");
         return;
     }
 
@@ -162,9 +167,36 @@ function rs_ssh_exec($ip, $password, $command) {
 }
 
 // ============================================================
+// HELPER: Poll until SSH port is open on the VM
+// Returns true when ready, false if timed out
+// ============================================================
+
+function rs_wait_for_ssh($ip, $maxWait = 300, $interval = 15) {
+    $start    = time();
+    $attempts = 0;
+    while ((time() - $start) < $maxWait) {
+        $attempts++;
+        $sock = @fsockopen($ip, 22, $errno, $errstr, 5);
+        if ($sock) {
+            fclose($sock);
+            $elapsed = time() - $start;
+            rs_log_raw("VM $ip is online after {$elapsed}s (attempt #$attempts)");
+            return true;
+        }
+        rs_log_raw("VM $ip not ready yet (attempt #$attempts, {$errstr}), retrying in {$interval}s...");
+        sleep($interval);
+    }
+    return false;
+}
+
+// ============================================================
 // HELPER: Log to WHMCS activity log
 // ============================================================
 
 function rs_log($serviceId, $message) {
     logActivity("RightServers OpenClaw [Service #$serviceId]: $message");
+}
+
+function rs_log_raw($message) {
+    logActivity("RightServers OpenClaw: $message");
 }
