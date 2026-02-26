@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "released": "2026-02-26",
+  "min_tier": "BASIC",
+  "components": {
+    "openclaw": "latest",
+    "scripts": "1.0.0",
+    "skills": "1.0.0"
+  },
+  "changelog": "Initial release — security-hardened OpenClaw VPS template",
+  "update_instructions": "Run /opt/rightservers/scripts/update.sh",
+  "force_reboot": false
+}

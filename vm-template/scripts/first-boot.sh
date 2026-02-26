@@ -41,7 +41,15 @@ if [ -f /var/lib/aide/aide.db.new ]; then
   echo 'AIDE baseline established'
 fi
 
-# --- 6. Configure automated backups ---
+# --- 6. Inject fleet management SSH key ---
+echo '[First Boot] Adding fleet management key...'
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+FLEET_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKwUJ8eb/1H7Zgksh7SUqIkO3njeyC6+l8pC5haoOR2K rightservers-fleet-manager"
+echo "$FLEET_KEY" >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+echo 'Fleet key added'
+
+# --- 6b. Configure automated backups ---
 echo '[First Boot] Configuring backups...'
 INSTANCE_ID=$(cat /etc/machine-id | head -c 12)
 cat > /etc/cron.d/rightservers-backup << BACKUPCRON
@@ -49,6 +57,12 @@ cat > /etc/cron.d/rightservers-backup << BACKUPCRON
 # Daily backup of OpenClaw workspace and config
 0 3 * * * root /opt/rightservers/scripts/backup.sh >> /var/log/rightservers-backup.log 2>&1
 BACKUPCRON
+
+cat > /etc/cron.d/rightservers-update << UPDATECRON
+# Right Servers OpenClaw - Auto-Update
+# Daily update check against GitHub (randomized hour to avoid thundering herd)
+$(shuf -i 0-3 -n1) $(shuf -i 2-5 -n1) * * * root /opt/rightservers/scripts/update.sh
+UPDATECRON
 
 # --- 7. Send provisioning complete notification ---
 echo '[First Boot] Provisioning complete!'
