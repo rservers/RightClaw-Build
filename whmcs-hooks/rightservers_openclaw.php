@@ -1,202 +1,165 @@
 <?php
 /**
  * Right Servers - OpenClaw VPS Post-Provisioning Hook
- *
- * HOW IT WORKS:
- * 1. Customer orders an OpenClaw VPS product (Basic, Pro, or Enterprise)
- * 2. AutoVM provisions the VM from your template (injects IP, hostname, password)
- * 3. WHMCS fires AfterModuleCreate — this hook intercepts it
- * 4. Hook SSHes into the new VM and runs the appropriate tier upgrade script
- * 5. Done — instance is fully configured for the customer's tier
- *
- * INSTALL:
- * Upload this file to: /home/portal/public_html/includes/hooks/rightservers_openclaw.php
- *
- * CONFIGURE:
- * Set the product group name and product names below to match your WHMCS products.
+ * Fires after AutoVM provisions a VM from the Rightclaw template.
+ * Install: /home/portal/public_html/includes/hooks/rightservers_openclaw.php
  */
 
 // ============================================================
-// CONFIGURATION — edit these to match your WHMCS product names
+// CONFIGURATION
 // ============================================================
 
-// The WHMCS product group name for your OpenClaw VPS products
-define('RS_PRODUCT_GROUP', 'Rightclaw');
-
-// Map WHMCS product names → tier upgrade scripts on the VM
-// Key = WHMCS product name (exact match)
-// Value = script to run on the VM (or null for Basic — no extra script needed)
-define('RS_TIER_MAP', json_encode([
-    'Rightclaw Basic'      => null,
-    'Rightclaw Pro'        => '/opt/rightservers/scripts/upgrade-pro.sh',
-    'Rightclaw Enterprise' => '/opt/rightservers/scripts/upgrade-enterprise.sh',
+// Rightclaw product IDs — update if products are recreated
+define('RS_PRODUCT_IDS', json_encode([
+    155 => ['name' => 'Rightclaw Basic',      'script' => null],
+    156 => ['name' => 'Rightclaw Pro',        'script' => '/opt/rightservers/scripts/upgrade-pro.sh'],
+    157 => ['name' => 'Rightclaw Enterprise', 'script' => '/opt/rightservers/scripts/upgrade-enterprise.sh'],
 ]));
 
-// SSH key path on the WHMCS server that has access to customer VMs
-// Generate with: ssh-keygen -t ed25519 -f /root/.ssh/rightservers_deploy
-// Then add the public key to the VM template's /root/.ssh/authorized_keys
-// (template-prep.sh removes this — so you'll need AutoVM to inject it, OR
-//  use password auth temporarily during first-boot, then the hook adds your key)
-define('RS_SSH_KEY', '/root/.ssh/rightservers_deploy');
-
-// Your deployer SSH username (root by default)
+// Fleet SSH key on this server (cpanel11) — has access to all customer VMs
+define('RS_SSH_KEY',  '/root/.ssh/rightservers_fleet');
 define('RS_SSH_USER', 'root');
 
-// Max seconds to wait for VM to become reachable after AutoVM provisions it
-// Hook will poll every 15s and proceed as soon as SSH is up — no unnecessary waiting
+// Max seconds to wait for VM SSH to become reachable (polls every 15s)
 define('RS_BOOT_MAX_WAIT', 300);
 
 // ============================================================
-// HOOK: After Module Create (fires after AutoVM provisions VM)
+// HOOK: After Module Create
 // ============================================================
 
 add_hook('AfterModuleCreate', 1, function ($vars) {
-    $serviceId  = $vars['params']['serviceid'];
-    $productName = $vars['params']['configoptions']['name'] ?? $vars['params']['product']['name'] ?? '';
-    $serverIp    = $vars['params']['server']['ipaddress'] ?? '';
-    $assignedIp  = $vars['params']['domain'] ?? $vars['params']['dedicatedip'] ?? '';
-    $rootPass    = $vars['params']['password'] ?? '';
+    $params    = $vars['params'];
+    $serviceId = $params['serviceid'] ?? $params['accountid'] ?? 'unknown';
+    $pid       = (int)($params['pid'] ?? $params['packageid'] ?? 0);
+    $password  = $params['password'] ?? '';
 
-    // Only run for OpenClaw VPS products
-    $groupName = $vars['params']['product']['groupname'] ?? '';
-    if (stripos($groupName, 'rightclaw') === false && stripos($productName, 'rightclaw') === false) {
-        return;
-    }
+    // Check if this is a Rightclaw product by PID
+    $products = json_decode(RS_PRODUCT_IDS, true);
+    if (!isset($products[$pid])) return; // Not a Rightclaw product
 
-    $tierMap = json_decode(RS_TIER_MAP, true);
+    $productName = $products[$pid]['name'];
+    $tierScript  = $products[$pid]['script'];
 
-    // Find matching tier script
-    $tierScript = null;
-    foreach ($tierMap as $product => $script) {
-        if (stripos($productName, $product) !== false || $productName === $product) {
-            $tierScript = $script;
-            break;
-        }
-    }
+    rs_log($serviceId, "Post-provisioning started | Product: $productName | PID: $pid");
 
-    // Log that we're starting
-    rs_log($serviceId, "OpenClaw post-provisioning started | Product: $productName | IP: $assignedIp");
+    // Get IP — AutoVM populates dedicatedip; fall back to domain
+    $targetIp = $params['dedicatedip'] ?? $params['domain'] ?? '';
 
-    // Poll until VM is reachable via SSH (up to RS_BOOT_MAX_WAIT seconds)
-    $targetIp = $assignedIp ?: $serverIp;
+    // If IP still empty, try fetching it from the service record
     if (empty($targetIp)) {
-        rs_log($serviceId, "ERROR: Could not determine VM IP address. Manual tier activation required.");
+        rs_log($serviceId, "IP not in params — fetching from service record...");
+        $targetIp = rs_get_service_ip($serviceId);
+    }
+
+    if (empty($targetIp)) {
+        rs_log($serviceId, "ERROR: No IP found for service #$serviceId. Manual tier activation required.");
         return;
     }
 
-    // Poll for SSH availability — proceed as soon as VM responds, max RS_BOOT_MAX_WAIT seconds
-    rs_log($serviceId, "Waiting for VM to come online (max " . RS_BOOT_MAX_WAIT . "s, polling every 15s)...");
-    $ready = rs_wait_for_ssh($targetIp, RS_BOOT_MAX_WAIT, 15);
+    rs_log($serviceId, "Target IP: $targetIp — polling for SSH (max " . RS_BOOT_MAX_WAIT . "s)...");
+
+    // Poll until SSH is up
+    $ready = rs_wait_for_ssh($targetIp, $serviceId);
     if (!$ready) {
-        rs_log($serviceId, "ERROR: VM at $targetIp did not come online within " . RS_BOOT_MAX_WAIT . "s. Manual tier activation required.");
+        rs_log($serviceId, "ERROR: VM did not come online within " . RS_BOOT_MAX_WAIT . "s. Manual activation required.");
         return;
     }
 
-    // Run tier upgrade script if needed
-    if ($tierScript !== null) {
-        rs_log($serviceId, "Running tier script: $tierScript");
-        $result = rs_ssh_exec($targetIp, $rootPass, $tierScript);
-        rs_log($serviceId, "Tier script result: $result");
+    // Basic tier — no upgrade script needed
+    if ($tierScript === null) {
+        rs_log($serviceId, "Basic tier — no upgrade script needed. Verifying OpenClaw...");
     } else {
-        rs_log($serviceId, "Basic tier — no upgrade script needed.");
+        rs_log($serviceId, "Running tier script: $tierScript");
+        $result = rs_ssh_exec($targetIp, $password, $tierScript . " 2>&1 | tail -5");
+        rs_log($serviceId, "Tier result: $result");
     }
 
     // Verify OpenClaw is running
-    $check = rs_ssh_exec($targetIp, $rootPass, 'openclaw status 2>&1 | grep -E "Gateway|running" | head -3');
-    rs_log($serviceId, "OpenClaw status check: $check");
+    $status = rs_ssh_exec($targetIp, $password, 'openclaw --version 2>/dev/null && openclaw gateway status 2>/dev/null | grep -E "running|active" | head -2 || echo "Gateway not yet started"');
+    rs_log($serviceId, "OpenClaw: $status");
 
-    rs_log($serviceId, "Post-provisioning complete for service #$serviceId");
+    rs_log($serviceId, "Post-provisioning complete for $productName (#$serviceId)");
 });
 
 // ============================================================
-// HOOK: After Module Suspend
+// HOOK: Suspend
 // ============================================================
 
 add_hook('AfterModuleSuspend', 1, function ($vars) {
-    $serviceId = $vars['params']['serviceid'];
-    $productName = $vars['params']['product']['name'] ?? '';
-    if (stripos($productName, 'rightclaw') === false) return;
+    $params    = $vars['params'];
+    $pid       = (int)($params['pid'] ?? $params['packageid'] ?? 0);
+    $products  = json_decode(RS_PRODUCT_IDS, true);
+    if (!isset($products[$pid])) return;
 
-    $assignedIp = $vars['params']['dedicatedip'] ?? '';
-    $rootPass   = $vars['params']['password'] ?? '';
+    $serviceId = $params['serviceid'] ?? 'unknown';
+    $targetIp  = $params['dedicatedip'] ?? $params['domain'] ?? '';
+    $password  = $params['password'] ?? '';
 
-    // Stop OpenClaw gateway on suspend
-    rs_ssh_exec($assignedIp, $rootPass, 'openclaw gateway stop 2>/dev/null || true');
-    rs_log($serviceId, "OpenClaw gateway stopped (suspended)");
+    rs_ssh_exec($targetIp, $password, 'openclaw gateway stop 2>/dev/null || true');
+    rs_log($serviceId, "Gateway stopped (service suspended)");
 });
 
 // ============================================================
-// HOOK: After Module Unsuspend
+// HOOK: Unsuspend
 // ============================================================
 
 add_hook('AfterModuleUnsuspend', 1, function ($vars) {
-    $serviceId = $vars['params']['serviceid'];
-    $productName = $vars['params']['product']['name'] ?? '';
-    if (stripos($productName, 'rightclaw') === false) return;
+    $params    = $vars['params'];
+    $pid       = (int)($params['pid'] ?? $params['packageid'] ?? 0);
+    $products  = json_decode(RS_PRODUCT_IDS, true);
+    if (!isset($products[$pid])) return;
 
-    $assignedIp = $vars['params']['dedicatedip'] ?? '';
-    $rootPass   = $vars['params']['password'] ?? '';
+    $serviceId = $params['serviceid'] ?? 'unknown';
+    $targetIp  = $params['dedicatedip'] ?? $params['domain'] ?? '';
+    $password  = $params['password'] ?? '';
 
-    // Restart OpenClaw gateway on unsuspend
-    rs_ssh_exec($assignedIp, $rootPass, 'openclaw gateway start 2>/dev/null || true');
-    rs_log($serviceId, "OpenClaw gateway started (unsuspended)");
+    rs_ssh_exec($targetIp, $password, 'openclaw gateway start 2>/dev/null || true');
+    rs_log($serviceId, "Gateway started (service unsuspended)");
 });
 
 // ============================================================
-// HELPER: Execute command on VM via SSH
-// Uses password auth as fallback since key may not be deployed yet
+// HELPERS
 // ============================================================
 
-function rs_ssh_exec($ip, $password, $command) {
-    // Try SSH key first, fall back to password via sshpass
-    $keyPath = RS_SSH_KEY;
-    $user    = RS_SSH_USER;
-    $opts    = "-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes";
-
-    if (file_exists($keyPath)) {
-        $cmd = "ssh -i $keyPath $opts $user@$ip " . escapeshellarg($command) . " 2>&1";
-    } else {
-        // Fall back to sshpass (password auth)
-        $cmd = "sshpass -p " . escapeshellarg($password) .
-               " ssh $opts -o PreferredAuthentications=password $user@$ip " .
-               escapeshellarg($command) . " 2>&1";
-    }
-
-    $output = shell_exec($cmd);
-    return trim($output ?? 'no output');
+function rs_get_service_ip($serviceId) {
+    // Fetch the service record from WHMCS to get the assigned IP
+    $result = localAPI('GetClientsProducts', ['serviceid' => $serviceId]);
+    return $result['products']['product'][0]['dedicatedip'] ?? '';
 }
 
-// ============================================================
-// HELPER: Poll until SSH port is open on the VM
-// Returns true when ready, false if timed out
-// ============================================================
-
-function rs_wait_for_ssh($ip, $maxWait = 300, $interval = 15) {
-    $start    = time();
-    $attempts = 0;
+function rs_wait_for_ssh($ip, $serviceId, $maxWait = RS_BOOT_MAX_WAIT, $interval = 15) {
+    $start = time();
+    $attempt = 0;
     while ((time() - $start) < $maxWait) {
-        $attempts++;
+        $attempt++;
         $sock = @fsockopen($ip, 22, $errno, $errstr, 5);
         if ($sock) {
             fclose($sock);
             $elapsed = time() - $start;
-            rs_log_raw("VM $ip is online after {$elapsed}s (attempt #$attempts)");
+            rs_log($serviceId, "VM online after {$elapsed}s (attempt #$attempt)");
             return true;
         }
-        rs_log_raw("VM $ip not ready yet (attempt #$attempts, {$errstr}), retrying in {$interval}s...");
+        rs_log($serviceId, "VM not ready (attempt #$attempt), retrying in {$interval}s...");
         sleep($interval);
     }
     return false;
 }
 
-// ============================================================
-// HELPER: Log to WHMCS activity log
-// ============================================================
+function rs_ssh_exec($ip, $password, $command) {
+    $keyPath = RS_SSH_KEY;
+    $user    = RS_SSH_USER;
+    $opts    = "-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes";
 
-function rs_log($serviceId, $message) {
-    logActivity("RightServers OpenClaw [Service #$serviceId]: $message");
+    if (file_exists($keyPath)) {
+        $cmd = "ssh -i $keyPath $opts $user@$ip " . escapeshellarg($command) . " 2>&1";
+    } else {
+        $cmd = "sshpass -p " . escapeshellarg($password) .
+               " ssh $opts -o PreferredAuthentications=password $user@$ip " .
+               escapeshellarg($command) . " 2>&1";
+    }
+    return trim(shell_exec($cmd) ?? 'no output');
 }
 
-function rs_log_raw($message) {
-    logActivity("RightServers OpenClaw: $message");
+function rs_log($serviceId, $message) {
+    logActivity("RightServers OpenClaw [#$serviceId]: $message");
 }
