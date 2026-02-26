@@ -21,15 +21,15 @@
 // ============================================================
 
 // The WHMCS product group name for your OpenClaw VPS products
-define('RS_PRODUCT_GROUP', 'OpenClaw VPS');
+define('RS_PRODUCT_GROUP', 'Rightclaw');
 
 // Map WHMCS product names → tier upgrade scripts on the VM
 // Key = WHMCS product name (exact match)
 // Value = script to run on the VM (or null for Basic — no extra script needed)
 define('RS_TIER_MAP', json_encode([
-    'OpenClaw VPS Basic'      => null,
-    'OpenClaw VPS Pro'        => '/opt/rightservers/scripts/upgrade-pro.sh',
-    'OpenClaw VPS Enterprise' => '/opt/rightservers/scripts/upgrade-enterprise.sh',
+    'Rightclaw Basic'      => null,
+    'Rightclaw Pro'        => '/opt/rightservers/scripts/upgrade-pro.sh',
+    'Rightclaw Enterprise' => '/opt/rightservers/scripts/upgrade-enterprise.sh',
 ]));
 
 // SSH key path on the WHMCS server that has access to customer VMs
